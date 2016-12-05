@@ -1,10 +1,10 @@
+#![feature(test)]
+use std::time::Instant;
 use std::result;
 use std::fmt;
 use std::error::Error;
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::sync::mpsc;
+extern crate test;
 extern crate scoped_threadpool;
 use scoped_threadpool::Pool;
 
@@ -66,21 +66,18 @@ impl SubColumn<f32> {
             self.equilibrate_cell(index).unwrap();
         }
     }
-    fn push_equilibrate_upper(&mut self) -> Result<f32> {
+    fn push_equilibrate_upper(&mut self) -> Result<()> {
         // Get last value of upper
-        let out;
-        match self.upper.back_mut() {
-            Some(x) => {
-                out = *x;
-                *x = 0.0;
-            },
-            None => return Err(CPCError::NullColumn),
-        }
+        {
+            let  back = self.upper.back_mut().unwrap();
 
+            self.output.push_front(*back);
+            *back = 0.0;
+        }
         self.upper.push_front(0.0);
         self.upper.pop_back();
         self.equilibrate();
-        Ok(out)
+        Ok(())
     }
 
 }
@@ -116,7 +113,7 @@ impl Column {
 
     }
 
-    fn push_equilibrate_upper(&mut self, loops: u32) {
+    fn push_equilibrate_upper(&mut self, loops: u32, threads: u32) {
         // Should be parallelized here
         // let (tx, rx) = mpsc::channel();
                     //self.subcolumns[index].push_equilibrate_upper().unwrap();
@@ -128,13 +125,12 @@ impl Column {
             }
         }*/
         
-        let mut pool = Pool::new(4);
+        let mut pool = Pool::new(threads);
         pool.scoped(|scoped| {
             for e in &mut self.subcolumns {
                 scoped.execute(move || {
                     for _ in 0..loops {
-                        let out = e.push_equilibrate_upper().unwrap();
-                        e.output.push_front(out);
+                        e.push_equilibrate_upper().unwrap();
                     }
                 });
             }
@@ -157,6 +153,8 @@ impl Column {
 
 
 fn main() {
+    let start = Instant::now();
+
     let mut column = Column { subcolumns: VecDeque::new()};
     for _ in 0..10 {
         column.add_subcolumn();
@@ -180,17 +178,68 @@ fn main() {
     column.equilibrate();
     //column.pretty_print(); // that's just for small columns and debug
 
-    column.push_equilibrate_upper(100000);
+    column.push_equilibrate_upper(100000, 4);
 //        column.pretty_print();
 //        println!("");
     println!("Worked here");
     // TODO Inverted here should be better
     // TODO That would be better with indices anyway
-    for subcol in column.subcolumns.iter() {
+/*    for subcol in column.subcolumns.iter() {
         for j in 0..subcol.output.len() {
             print!("{},", subcol.output[j])
         }
         println!("")
+    }
+     */
+    let elapsed = start.elapsed();
+    println!("Elapsed: {} ms",
+             (elapsed.as_secs() * 1_000) + (elapsed.subsec_nanos() / 1_000_000) as u64);
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::Column;
+    use std::collections::VecDeque;
+    use test::Bencher;
+
+    fn bench(threads: u32) {
+        
+            let mut column = Column { subcolumns: VecDeque::new()};
+            for _ in 0..10 {
+                column.add_subcolumn();
+            }
+
+            for _ in 0..100 {
+                column.grow();
+            }
+
+            for i in 0..10 {
+                column.subcolumns[i].upper[0] = 1.0;
+            }
+
+            column.push_equilibrate_upper(1000, threads);
+        
+    }
+
+    #[bench]
+    fn benchmark_singlethread(b: &mut Bencher) {
+        b.iter(|| bench(1));
+    }
+
+    #[bench]
+    fn benchmark_twothread(b: &mut Bencher) {
+        b.iter(|| bench(2));
+    }
+
+    #[bench]
+    fn benchmark_threethread(b: &mut Bencher) {
+        b.iter(|| bench(3));
+    }
+
+    #[bench]
+    fn benchmark_fourthread(b: &mut Bencher) {
+        b.iter(|| bench(4));
     }
 
 }
